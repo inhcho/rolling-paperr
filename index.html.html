@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>롤링페이퍼</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+
+<!-- Firebase -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, push, onValue, set, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDLZ3gyxxm-GFTdY5xLLwmOCDyjAJsZ4x0",
+    authDomain: "inhcho-1edaa.firebaseapp.com",
+    databaseURL: "https://inhcho-1edaa-default-rtdb.firebaseio.com",
+    projectId: "inhcho-1edaa",
+    storageBucket: "inhcho-1edaa.firebasestorage.app",
+    messagingSenderId: "1088523917652",
+    appId: "1:1088523917652:web:96d786a3385c9a77cc10c1"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  // ── Utilities ──────────────────────────────────────────────────────
+  const uid = () => Math.random().toString(36).slice(2, 9);
+  const $ = id => document.getElementById(id);
+  const fmtDate = ts => {
+    const d = new Date(ts);
+    return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  };
+
+  // ── State ──────────────────────────────────────────────────────────
+  let currentPaperId = null;
+  let unsubscribe = null;
+
+  // ── Toast ──────────────────────────────────────────────────────────
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = msg;
+    $('toastWrap').appendChild(t);
+    setTimeout(() => t.remove(), 3000);
+  }
+
+  // ── Navigate ───────────────────────────────────────────────────────
+  function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    $(id).classList.add('active');
+  }
+
+  // ── Home ───────────────────────────────────────────────────────────
+  window.openCreateModal = () => $('createModal').classList.add('open');
+  window.closeCreateModal = () => $('createModal').classList.remove('open');
+
+  window.handleCreate = async () => {
+    const name = $('createName').value.trim();
+    if (!name) { toast('이름을 입력해 주세요'); return; }
+    $('createBtn').disabled = true;
+    $('createBtn').textContent = '만드는 중…';
+
+    const id = uid();
+    await set(ref(db, `papers/${id}`), { id, name, createdAt: Date.now() });
+    $('createModal').classList.remove('open');
+    $('createName').value = '';
+    $('createBtn').disabled = false;
+    $('createBtn').textContent = '만들기';
+    loadPaper(id);
+  };
+
+  window.handleJoin = () => {
+    const val = $('joinInput').value.trim();
+    if (!val) { toast('링크 또는 코드를 입력해 주세요'); return; }
+    // extract id from URL or use raw
+    let id = val;
+    try {
+      const u = new URL(val);
+      id = u.searchParams.get('p') || val;
+    } catch {}
+    loadPaper(id);
+  };
+
+  // ── Load paper ─────────────────────────────────────────────────────
+  async function loadPaper(id) {
+    showScreen('loadingScreen');
+    const snap = await get(ref(db, `papers/${id}`));
+    if (!snap.exists()) {
+      toast('롤링페이퍼를 찾을 수 없어요');
+      showScreen('homeScreen');
+      return;
+    }
+    const paper = snap.val();
+    currentPaperId = id;
+
+    // Update URL
+    const url = new URL(window.location.href);
+    url.searchParams.set('p', id);
+    window.history.replaceState({}, '', url);
+
+    // Update UI
+    $('paperTitle').textContent = paper.name + '에게';
+    $('heroName').textContent = paper.name;
+    $('shareUrl').textContent = url.toString();
+
+    // Real-time messages listener
+    if (unsubscribe) unsubscribe();
+    const msgsRef = ref(db, `messages/${id}`);
+    unsubscribe = onValue(msgsRef, snap => {
+      const msgs = [];
+      snap.forEach(child => msgs.push(child.val()));
+      renderMessages(msgs.reverse());
+      $('msgCount').textContent = `메시지 ${msgs.length}개`;
+    });
+
+    showScreen('paperScreen');
+  }
+
+  // ── Render messages ─────────────────────────────────────────────────
+  const COLORS = ['#E8C87A','#7BBFB5','#B5A0E0','#F4A7A7','#91BF8C','#7AACD4'];
+
+  function renderMessages(msgs) {
+    const grid = $('msgsGrid');
+    if (msgs.length === 0) {
+      grid.innerHTML = `
+        <div class="empty">
+          <div class="empty-icon">✉</div>
+          <div class="empty-text">아직 메시지가 없어요<br>첫 번째 메시지를 남겨보세요</div>
+        </div>`;
+      return;
+    }
+    grid.innerHTML = msgs.map((msg, i) => `
+      <div class="msg-card" style="border-top-color:${COLORS[msg.color]};animation-delay:${Math.min(i,8)*0.05}s">
+        <p class="msg-text">${escHtml(msg.text)}</p>
+        <div class="msg-footer">
+          <span class="msg-from">${escHtml(msg.from)}</span>
+          <span class="msg-time">${fmtDate(msg.ts)}</span>
+        </div>
+      </div>`).join('');
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── Write panel ─────────────────────────────────────────────────────
+  window.openWrite = () => {
+    $('writePanel').classList.add('open');
+    $('panelOverlay').classList.add('open');
+    setTimeout(() => $('msgText').focus(), 100);
+  };
+  window.closeWrite = () => {
+    $('writePanel').classList.remove('open');
+    $('panelOverlay').classList.remove('open');
+  };
+
+  window.updateChar = () => {
+    $('charCount').textContent = $('msgText').value.length;
+  };
+
+  window.submitMessage = async () => {
+    const text = $('msgText').value.trim();
+    if (!text) { toast('메시지를 입력해 주세요'); return; }
+    $('submitBtn').disabled = true;
+    $('submitBtn').textContent = '전송 중…';
+
+    const msg = {
+      id: uid(),
+      text,
+      from: $('msgFrom').value.trim() || '익명',
+      ts: Date.now(),
+      color: Math.floor(Math.random() * 6)
+    };
+
+    await push(ref(db, `messages/${currentPaperId}`), msg);
+    $('msgText').value = '';
+    $('msgFrom').value = '';
+    $('charCount').textContent = '0';
+    $('submitBtn').disabled = false;
+    $('submitBtn').textContent = '메시지 남기기';
+    closeWrite();
+    toast('메시지를 남겼어요 ✓');
+  };
+
+  // ── Copy link ────────────────────────────────────────────────────────
+  window.copyLink = () => {
+    const url = $('shareUrl').textContent;
+    navigator.clipboard?.writeText(url).then(() => toast('링크 복사 완료! 🔗'));
+  };
+
+  // ── Back to home ─────────────────────────────────────────────────────
+  window.goHome = () => {
+    if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    currentPaperId = null;
+    window.history.replaceState({}, '', window.location.pathname);
+    showScreen('homeScreen');
+  };
+
+  // ── Init ─────────────────────────────────────────────────────────────
+  window.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('p');
+    if (id) loadPaper(id);
+    else showScreen('homeScreen');
+
+    // Enter key on join
+    $('joinInput').addEventListener('keydown', e => e.key === 'Enter' && window.handleJoin());
+    $('createName').addEventListener('keydown', e => e.key === 'Enter' && window.handleCreate());
+  });
+</script>
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #F7F6F3;
+    --surface: #FFFFFF;
+    --border: #E8E6E1;
+    --border-strong: #C4C0B8;
+    --text: #1A1916;
+    --text-2: #6B6760;
+    --text-3: #A09D98;
+    --accent: #1A1916;
+    --accent-fg: #FFFFFF;
+    --r: 12px;
+    --r-lg: 20px;
+    --shadow: 0 1px 3px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.04);
+    --shadow-lg: 0 2px 8px rgba(0,0,0,.08), 0 16px 48px rgba(0,0,0,.08);
+  }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* Screens */
+  .screen { display: none; min-height: 100vh; }
+  .screen.active { display: flex; }
+
+  /* Center layout */
+  #homeScreen, #loadingScreen {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  #paperScreen { flex-direction: column; }
+
+  /* ── HOME ── */
+  .home-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-lg);
+    width: 100%;
+    max-width: 400px;
+    overflow: hidden;
+  }
+  .home-hero {
+    padding: 48px 36px 36px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .home-icon {
+    font-size: 2.2rem;
+    margin-bottom: 20px;
+    display: block;
+    filter: grayscale(1);
+  }
+  .home-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 2.2rem;
+    line-height: 1.15;
+    margin-bottom: 10px;
+  }
+  .home-sub {
+    font-size: .9rem;
+    color: var(--text-2);
+    line-height: 1.65;
+  }
+  .home-actions {
+    padding: 28px 36px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .home-join {
+    display: flex;
+    gap: 8px;
+  }
+  .home-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-3);
+    font-size: .75rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    margin: 4px 0;
+  }
+  .home-divider::before, .home-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── BUTTONS ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 18px;
+    border-radius: var(--r);
+    font-family: 'DM Sans', sans-serif;
+    font-size: .875rem;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: all .15s ease;
+    white-space: nowrap;
+  }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); width: 100%; }
+  .btn-primary:hover { opacity: .82; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+  .btn-outline {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    flex-shrink: 0;
+  }
+  .btn-outline:hover { background: var(--bg); }
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-2);
+    padding: 8px 10px;
+    font-size: .9rem;
+  }
+  .btn-ghost:hover { background: var(--border); color: var(--text); border-radius: 8px; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
+  .btn-sm { padding: 7px 14px; font-size: .8rem; }
+
+  /* ── INPUTS ── */
+  input, textarea {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    font-family: 'DM Sans', sans-serif;
+    font-size: .9rem;
+    color: var(--text);
+    outline: none;
+    transition: border-color .15s, background .15s;
+  }
+  input:focus, textarea:focus {
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+  textarea { resize: none; min-height: 110px; line-height: 1.65; }
+  .form-label {
+    font-size: .75rem;
+    font-weight: 600;
+    color: var(--text-2);
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    display: block;
+  }
+  .form-group { display: flex; flex-direction: column; }
+
+  /* ── MODAL ── */
+  .modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(0,0,0,.3);
+    backdrop-filter: blur(4px);
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    animation: fadeIn .2s ease;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border-radius: var(--r-lg);
+    width: 100%;
+    max-width: 420px;
+    box-shadow: var(--shadow-lg);
+    animation: slideUp .25s cubic-bezier(.16,1,.3,1);
+    overflow: hidden;
+  }
+  .modal-header {
+    padding: 24px 24px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1.25rem;
+  }
+  .modal-body {
+    padding: 4px 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .modal-footer {
+    padding: 0 24px 24px;
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+  .modal-footer .btn-primary { width: auto; }
+
+  /* ── TOPBAR ── */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(247,246,243,.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+    height: 54px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .topbar-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1.05rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar-badge {
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    background: var(--border);
+    color: var(--text-2);
+    padding: 3px 8px;
+    border-radius: 99px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .live-pill {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: .75rem;
+    color: var(--text-2);
+    flex-shrink: 0;
+  }
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    background: #22C55E;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  /* ── PAPER PAGE ── */
+  .paper-body {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 28px 20px 100px;
+    width: 100%;
+  }
+
+  /* Header card */
+  .paper-header {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: 36px 36px 32px;
+    margin-bottom: 16px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  .paper-header::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--accent);
+  }
+  .paper-eyebrow {
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 8px;
+  }
+  .paper-name {
+    font-family: 'DM Serif Display', serif;
+    font-size: 2.6rem;
+    line-height: 1.1;
+    margin-bottom: 6px;
+  }
+  .paper-meta { font-size: .875rem; color: var(--text-2); }
+
+  /* Share strip */
+  .share-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    margin-bottom: 28px;
+    box-shadow: var(--shadow);
+  }
+  .share-icon { color: var(--text-3); font-size: .9rem; flex-shrink: 0; }
+  #shareUrl {
+    flex: 1;
+    font-size: .78rem;
+    color: var(--text-2);
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Section label */
+  .section-label {
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  /* Messages grid */
+  .msgs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 12px;
+  }
+  .msg-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 2px solid #E8C87A;
+    border-radius: var(--r);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    animation: cardIn .4s cubic-bezier(.16,1,.3,1) both;
+    transition: box-shadow .2s, transform .2s;
+  }
+  .msg-card:hover { box-shadow: var(--shadow); transform: translateY(-2px); }
+  @keyframes cardIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+  .msg-text { font-size: .9rem; line-height: 1.68; color: var(--text); flex: 1; }
+  .msg-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .msg-from { font-size: .75rem; font-weight: 600; color: var(--text-2); }
+  .msg-time { font-size: .7rem; color: var(--text-3); white-space: nowrap; }
+
+  /* Empty */
+  .empty {
+    grid-column: 1/-1;
+    padding: 64px 20px;
+    text-align: center;
+    color: var(--text-3);
+  }
+  .empty-icon { font-size: 2rem; margin-bottom: 12px; filter: grayscale(1); }
+  .empty-text { font-size: .875rem; line-height: 1.7; }
+
+  /* FAB */
+  .fab {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border: none;
+    cursor: pointer;
+    font-size: 1.2rem;
+    box-shadow: 0 4px 16px rgba(0,0,0,.22);
+    transition: all .2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+  .fab:hover { transform: scale(1.1); box-shadow: 0 6px 22px rgba(0,0,0,.28); }
+
+  /* Write panel */
+  .panel-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    background: rgba(0,0,0,.22);
+    backdrop-filter: blur(3px);
+    animation: fadeIn .2s;
+  }
+  .panel-overlay.open { display: block; }
+
+  .write-panel {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 80;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    border-radius: 20px 20px 0 0;
+    padding: 24px 24px 44px;
+    box-shadow: 0 -8px 40px rgba(0,0,0,.1);
+    transform: translateY(100%);
+    transition: transform .32s cubic-bezier(.16,1,.3,1);
+    max-width: 560px;
+    margin: 0 auto;
+  }
+  .write-panel.open { transform: translateY(0); }
+  .write-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  .write-panel-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1.2rem;
+  }
+  .write-fields { display: flex; flex-direction: column; gap: 12px; }
+  .char-hint { font-size: .72rem; color: var(--text-3); text-align: right; margin-top: 4px; }
+
+  /* Loading */
+  .spinner {
+    width: 22px; height: 22px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  .loading-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .loading-text { font-size: .875rem; color: var(--text-2); }
+
+  /* Toast */
+  .toast-wrap {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 200;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .toast {
+    background: var(--text);
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 99px;
+    font-size: .84rem;
+    font-weight: 500;
+    white-space: nowrap;
+    animation: toastIn .3s cubic-bezier(.16,1,.3,1);
+  }
+  @keyframes toastIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+  @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+  @keyframes slideUp { from{transform:translateY(16px);opacity:0} to{transform:translateY(0);opacity:1} }
+
+  @media (max-width: 480px) {
+    .home-hero { padding: 36px 28px 28px; }
+    .home-actions { padding: 24px 28px 32px; }
+    .paper-header { padding: 28px 24px 24px; }
+    .paper-name { font-size: 2.1rem; }
+    .msgs-grid { grid-template-columns: 1fr 1fr; }
+    .write-panel { padding: 24px 20px 48px; }
+  }
+  @media (max-width: 360px) {
+    .msgs-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── HOME ── -->
+<div id="homeScreen" class="screen">
+  <div class="home-wrap">
+    <div class="home-hero">
+      <span class="home-icon">✉</span>
+      <h1 class="home-title">Rolling Paper</h1>
+      <p class="home-sub">소중한 사람에게<br>여러 명이 함께 마음을 전해요</p>
+    </div>
+    <div class="home-actions">
+      <button class="btn btn-primary" onclick="openCreateModal()">새 롤링페이퍼 만들기</button>
+      <div class="home-divider">또는</div>
+      <div class="home-join">
+        <input id="joinInput" placeholder="링크 또는 코드 입력" />
+        <button class="btn btn-outline" onclick="handleJoin()">참여</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── LOADING ── -->
+<div id="loadingScreen" class="screen">
+  <div class="loading-wrap">
+    <div class="spinner"></div>
+    <span class="loading-text">불러오는 중…</span>
+  </div>
+</div>
+
+<!-- ── PAPER ── -->
+<div id="paperScreen" class="screen">
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="btn btn-ghost" onclick="goHome()">←</button>
+      <span class="topbar-title" id="paperTitle">롤링페이퍼</span>
+      <span class="topbar-badge" id="msgCount">메시지 0개</span>
+    </div>
+    <div class="live-pill">
+      <div class="live-dot"></div>
+      실시간
+    </div>
+  </header>
+
+  <div class="paper-body">
+    <!-- Header -->
+    <div class="paper-header">
+      <div class="paper-eyebrow">Rolling Paper</div>
+      <div class="paper-name" id="heroName">이름</div>
+      <div class="paper-meta">에게 전하는 메시지들</div>
+    </div>
+
+    <!-- Share strip -->
+    <div class="share-strip">
+      <span class="share-icon">🔗</span>
+      <span id="shareUrl">링크 생성 중…</span>
+      <button class="btn btn-outline btn-sm" onclick="copyLink()">복사</button>
+    </div>
+
+    <!-- Messages -->
+    <div class="section-label">메시지</div>
+    <div class="msgs-grid" id="msgsGrid">
+      <div class="empty">
+        <div class="empty-icon">✉</div>
+        <div class="empty-text">아직 메시지가 없어요<br>첫 번째 메시지를 남겨보세요</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FAB -->
+  <button class="fab" onclick="openWrite()" title="메시지 쓰기">✏</button>
+
+  <!-- Panel overlay -->
+  <div class="panel-overlay" id="panelOverlay" onclick="closeWrite()"></div>
+
+  <!-- Write panel -->
+  <div class="write-panel" id="writePanel">
+    <div class="write-panel-header">
+      <span class="write-panel-title">메시지 남기기</span>
+      <button class="btn btn-ghost" onclick="closeWrite()">✕</button>
+    </div>
+    <div class="write-fields">
+      <div class="form-group">
+        <label class="form-label">메시지</label>
+        <textarea id="msgText" placeholder="전하고 싶은 말을 써주세요" maxlength="300" oninput="updateChar()"></textarea>
+        <div class="char-hint"><span id="charCount">0</span> / 300</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">이름 (선택)</label>
+        <input id="msgFrom" placeholder="익명으로 남길 수 있어요" maxlength="20" />
+      </div>
+      <button class="btn btn-primary" id="submitBtn" onclick="submitMessage()">메시지 남기기</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CREATE MODAL ── -->
+<div class="modal-backdrop" id="createModal" onclick="if(event.target===this)closeCreateModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">새 롤링페이퍼</span>
+      <button class="btn btn-ghost" onclick="closeCreateModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">주인공 이름</label>
+        <input id="createName" placeholder="누구를 위한 롤링페이퍼인가요?" maxlength="20" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeCreateModal()">취소</button>
+      <button class="btn btn-primary" id="createBtn" onclick="handleCreate()">만들기</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast-wrap" id="toastWrap"></div>
+
+</body>
+</html>
